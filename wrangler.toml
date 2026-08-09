@@ -1,0 +1,23 @@
+name = "zerozi-stock"
+main = "worker.js"
+compatibility_date = "2026-08-10"
+
+[triggers]
+crons = ["0 0-6 * * 1-5"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "naver_sise"
+database_id = "e4bd43bd-8692-45ad-8e99-28519cc78520"
+
+[[kv_namespaces]]
+binding = "ZEROZI_KV"
+id = "93bd518185de46a0901f01d79f8ba731"
+
+# secrets (wrangler secret put 으로 개별 등록, toml에는 값 넣지 않음)
+# GEMINI_API_KEY
+# GOOGLE_CLIENT_ID
+# GOOGLE_CLIENT_SECRET
+# GOOGLE_REFRESH_TOKEN
+# ZEROZI_BLOG_ID
+# ADMIN_KEY
