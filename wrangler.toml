@@ -14,6 +14,21 @@ database_id = "e4bd43bd-8692-45ad-8e99-28519cc78520"
 binding = "ZEROZI_KV"
 id = "93bd518185de46a0901f01d79f8ba731"
 
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+
 # secrets (wrangler secret put 으로 개별 등록, toml에는 값 넣지 않음)
 # GEMINI_API_KEY
 # GOOGLE_CLIENT_ID
