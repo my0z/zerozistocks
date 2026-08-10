@@ -51,11 +51,15 @@ async function runPostingJob(env) {
 async function getFreshWatchlistStocks(env) {
   const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const { results } = await env.DB.prepare(
-    `SELECT code, name, added_state, added_at, change_rate
-     FROM watchlist
-     WHERE source_board = '실시간포착'
-       AND added_at >= ?
-     ORDER BY added_at DESC
+    `SELECT
+       w.code, w.name, w.added_state, w.added_at, w.entry_price,
+       (SELECT s.change_rate FROM snapshots s
+        WHERE s.code = w.code
+        ORDER BY s.captured_at DESC LIMIT 1) AS change_rate
+     FROM watchlist w
+     WHERE w.source_board = '실시간포착'
+       AND w.added_at >= ?
+     ORDER BY w.added_at DESC
      LIMIT 20`
   ).bind(since).all();
   return results || [];
@@ -83,7 +87,7 @@ async function markPosted(env, stocks) {
 
 async function generateArticle(env, stocks) {
   const listText = stocks.map(s =>
-    `- ${s.name}(${s.code}): 신호=${s.added_state || '-'}, 등락률=${s.change_rate}%`
+    `- ${s.name}(${s.code}): 신호=${s.added_state || '-'}, 진입가=${s.entry_price ?? '-'}, 등락률=${s.change_rate != null ? s.change_rate + '%' : '정보없음'}`
   ).join('\n');
 
   const prompt = `너는 한국 주식 시황 블로거야. 아래는 실시간 조건검색으로 방금 포착된 급등 신호 종목 리스트야.
