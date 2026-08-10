@@ -1,5 +1,4 @@
-# wrangler.toml
-name = 'zerozi'
+name = "zerozi-stock"
 main = "worker.js"
 compatibility_date = "2026-08-10"
 
