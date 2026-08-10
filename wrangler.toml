@@ -2,9 +2,6 @@ name = "zerozistocks"
 main = "worker.js"
 compatibility_date = "2026-08-10"
 
-[triggers]
-crons = ["0 0-6 * * 1-5"]
-
 [[d1_databases]]
 binding = "DB"
 database_name = "naver_sise"
