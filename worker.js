@@ -49,7 +49,10 @@ async function runPostingJob(env) {
 
 // D1에서 최근 1시간 이내 실시간포착 편입 종목 조회 (읽기전용)
 async function getFreshWatchlistStocks(env) {
-  const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const since = new Date(Date.now() - 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 19)
+    .replace('T', ' '); // D1 datetime('now') 형식(YYYY-MM-DD HH:MM:SS)에 맞춤
   const { results } = await env.DB.prepare(
     `SELECT
        w.code, w.name, w.added_state, w.added_at, w.entry_price,
