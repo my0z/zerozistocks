@@ -8,7 +8,7 @@
  */
 
 const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
-const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 export default {
   async scheduled(event, env, ctx) {
