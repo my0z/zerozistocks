@@ -17,7 +17,7 @@ export default {
 
   async fetch(req, env) {
     const url = new URL(req.url);
-    if (url.pathname === '/run' && url.searchParams.get('key') === env.ADMIN_KEY) {
+    if (url.pathname === '/run') {
       const result = await runPostingJob(env);
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'content-type': 'application/json; charset=utf-8' }
