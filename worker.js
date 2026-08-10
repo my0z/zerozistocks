@@ -8,7 +8,6 @@
  */
 
 const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
-const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 export default {
   async scheduled(event, env, ctx) {
@@ -104,24 +103,30 @@ ${listText}
 - 본문: 각 종목의 포착 배경과 신호 의미를 자연스럽게 설명 (투자 권유 아님, 정보 제공 목적 명시)
 - 마지막에 "본 글은 투자 참고용이며 투자 판단의 책임은 본인에게 있습니다" 문구 포함
 - HTML 태그 사용 가능 (p, strong, ul, li)
-- 출력 형식은 반드시 아래 JSON만: {"title": "...", "content": "..."}`;
+- 출력은 반드시 아래 JSON만, 다른 텍스트 없이: {"title": "...", "content": "..."}`;
 
-  const res = await fetch(`${GEMINI_API}?key=${env.GEMINI_API_KEY}`, {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json' }
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: prompt }]
     })
   });
 
   if (!res.ok) {
-    throw new Error(`Gemini API error: ${res.status} ${await res.text()}`);
+    throw new Error(`Claude API error: ${res.status} ${await res.text()}`);
   }
 
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-  const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+  const text = (data.content || []).map(b => b.text || '').join('');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const parsed = JSON.parse(clean);
   return { title: parsed.title, content: parsed.content };
 }
 
