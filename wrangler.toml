@@ -1,5 +1,4 @@
-# wrangler.toml
-name = 'zerozistocks'
+name = "zerozistocks"
 main = "worker.js"
 compatibility_date = "2026-08-10"
 
@@ -25,7 +24,7 @@ database_id = "e4bd43bd-8692-45ad-8e99-28519cc78520"
 
 [[kv_namespaces]]
 binding = "ZEROZI_KV"
-id = "REPLACE_WITH_NEW_KV_ID"
+id = "93bd518185de46a0901f01d79f8ba731"
 
 # secrets (wrangler secret put 으로 개별 등록, toml에는 값 넣지 않음)
 # ANTHROPIC_API_KEY
