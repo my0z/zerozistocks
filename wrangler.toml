@@ -1,4 +1,4 @@
-name = "zerozi-stock"
+name = "zerozistocks"
 main = "worker.js"
 compatibility_date = "2026-08-10"
 
@@ -13,7 +13,7 @@ persist = true
 invocation_logs = true
 
 [observability.traces]
-enabled = false
+enabled = true
 persist = true
 head_sampling_rate = 1
 
@@ -27,7 +27,7 @@ binding = "ZEROZI_KV"
 id = "REPLACE_WITH_NEW_KV_ID"
 
 # secrets (wrangler secret put 으로 개별 등록, toml에는 값 넣지 않음)
-# GEMINI_API_KEY
+# ANTHROPIC_API_KEY
 # GOOGLE_CLIENT_ID
 # GOOGLE_CLIENT_SECRET
 # GOOGLE_REFRESH_TOKEN
