@@ -8,6 +8,7 @@
  */
 
 const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
+const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 export default {
   async scheduled(event, env, ctx) {
@@ -105,28 +106,22 @@ ${listText}
 - HTML 태그 사용 가능 (p, strong, ul, li)
 - 출력은 반드시 아래 JSON만, 다른 텍스트 없이: {"title": "...", "content": "..."}`;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch(`${GEMINI_API}?key=${env.GEMINI_API_KEY}`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01'
-    },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }]
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json' }
     })
   });
 
   if (!res.ok) {
-    throw new Error(`Claude API error: ${res.status} ${await res.text()}`);
+    throw new Error(`Gemini API error: ${res.status} ${await res.text()}`);
   }
 
   const data = await res.json();
-  const text = (data.content || []).map(b => b.text || '').join('');
-  const clean = text.replace(/```json|```/g, '').trim();
-  const parsed = JSON.parse(clean);
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+  const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
   return { title: parsed.title, content: parsed.content };
 }
 
