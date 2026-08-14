@@ -27,7 +27,7 @@ export default {
   }
 };
 
-const MAX_STOCKS_PER_POST = 5; // 상세 설명이 길어서 한 번에 너무 많으면 응답이 잘림
+const MAX_STOCKS_PER_POST = 3; // 상세 설명이 길어서 한 번에 너무 많으면 응답이 잘림
 
 async function runPostingJob(env) {
   const stocks = await getFreshWatchlistStocks(env);
@@ -208,7 +208,7 @@ ${listText}
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 8192 }
+      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 6000 }
     })
   });
 
