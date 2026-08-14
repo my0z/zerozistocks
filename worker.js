@@ -46,6 +46,10 @@ async function runPostingJob(env) {
   for (const s of alreadyPosted) {
     s.news = await fetchStockNews(s.name);
   }
+  // 종목별 09:00(KST)~현재 1분 간격 실제 가격 흐름으로 차트 이미지 생성
+  for (const s of alreadyPosted) {
+    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name);
+  }
 
   const { title, content } = await generateArticle(env, alreadyPosted);
   const accessToken = await getAccessToken(env);
@@ -54,6 +58,60 @@ async function runPostingJob(env) {
   await markPosted(env, alreadyPosted);
 
   return { ok: true, posted: true, postUrl: post.url, stocks: alreadyPosted.map(s => s.code) };
+}
+
+// 09:00(KST)~현재까지 snapshots의 실제 가격 데이터로 QuickChart 정적 이미지 URL 생성
+async function buildIntradayChartUrl(env, code, name) {
+  try {
+    const todayUtc = new Date().toISOString().slice(0, 10); // KST 09:00 = UTC 00:00 같은 날짜
+    const since = `${todayUtc}T00:00:00.000Z`;
+    const { results } = await env.DB.prepare(
+      `SELECT price, captured_at FROM snapshots
+       WHERE code = ? AND captured_at >= ?
+       ORDER BY captured_at ASC LIMIT 500`
+    ).bind(code, since).all();
+
+    if (!results || results.length < 2) return null;
+
+    const labels = results.map(r =>
+      new Date(r.captured_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })
+    );
+    const prices = results.map(r => r.price);
+
+    const chartConfig = {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: `${name} (09:00~현재, 1분봉)`,
+          data: prices,
+          borderColor: '#0B1E3D',
+          backgroundColor: 'rgba(11,30,61,0.08)',
+          fill: true,
+          pointRadius: 0,
+          borderWidth: 2
+        }]
+      },
+      options: {
+        plugins: { legend: { display: true, labels: { font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+          y: { ticks: { font: { size: 10 } } }
+        }
+      }
+    };
+
+    const res = await fetch('https://quickchart.io/chart/create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chart: chartConfig, backgroundColor: 'white', width: 640, height: 300, version: '4' })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.success ? data.url : null;
+  } catch {
+    return null; // 차트 생성 실패해도 포스팅 자체는 계속 진행
+  }
 }
 
 // Google 뉴스 RSS에서 종목명 관련 최신 기사 1건(제목+실제 링크) 조회
@@ -178,13 +236,12 @@ ${listText}
   return { title: parsed.title, content };
 }
 
-// TradingView 실시간 차트 iframe 위젯을 종목 섹션 하단에 삽입 (KRX 심볼, 장중 5분봉, 서울 타임존)
+// 09:00~현재 실제 가격으로 그린 정적 차트 이미지를 종목 섹션 하단에 삽입 (없으면 스킵)
 function injectCharts(html, stocks) {
   let result = html;
   for (const s of stocks) {
-    const chartUrl = `https://s.tradingview.com/widgetembed/?symbol=KRX%3A${s.code}&interval=5&theme=light&style=1&timezone=Asia%2FSeoul&locale=kr&hidesidetoolbar=1&hidetoptoolbar=1&saveimage=0`;
-    const chartHtml = `<div style="margin:0 0 20px;border:1px solid #E4E7EC;border-radius:8px;overflow:hidden;"><iframe src="${chartUrl}" style="width:100%;height:320px;border:0;" loading="lazy"></iframe></div>`;
-    // 해당 종목의 뉴스 링크(또는 없으면 h3) 바로 뒤에 차트 삽입
+    if (!s.chartUrl) continue;
+    const chartHtml = `<div style="margin:0 0 20px;border:1px solid #E4E7EC;border-radius:8px;overflow:hidden;padding:8px;background:#fff;"><img src="${s.chartUrl}" alt="${escapeHtml(s.name)} 09시~현재 1분봉 차트" style="width:100%;height:auto;display:block;"></div>`;
     const afterNewsPattern = new RegExp(`(<h3[^>]*>[^<]*${escapeRegex(s.name)}[^<]*\\(${escapeRegex(s.code)}\\)[^<]*</h3>(?:\\s*<p[^>]*>📰[\\s\\S]*?</p>)?)`);
     result = result.replace(afterNewsPattern, `$1${chartHtml}`);
   }
