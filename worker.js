@@ -27,16 +27,20 @@ export default {
   }
 };
 
+const MAX_STOCKS_PER_POST = 5; // 상세 설명이 길어서 한 번에 너무 많으면 응답이 잘림
+
 async function runPostingJob(env) {
   const stocks = await getFreshWatchlistStocks(env);
   if (stocks.length === 0) {
     return { ok: true, posted: false, reason: 'no fresh stocks' };
   }
 
-  const alreadyPosted = await filterAlreadyPosted(env, stocks);
+  let alreadyPosted = await filterAlreadyPosted(env, stocks);
   if (alreadyPosted.length === 0) {
     return { ok: true, posted: false, reason: 'all already posted today' };
   }
+  // 초과분은 다음 실행 회차에서 자동으로 이어서 포스팅됨 (posted 처리 안 하므로 다음 /run에서 다시 픽업)
+  alreadyPosted = alreadyPosted.slice(0, MAX_STOCKS_PER_POST);
 
   // 종목별 실제 뉴스 기사(제목+링크) 조회 - Gemini가 링크를 지어내지 않도록 별도 확보
   for (const s of alreadyPosted) {
@@ -146,7 +150,7 @@ ${listText}
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 4000 }
+      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 8192 }
     })
   });
 
@@ -155,8 +159,14 @@ ${listText}
   }
 
   const data = await res.json();
+  const finishReason = data.candidates?.[0]?.finishReason;
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-  const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+  let parsed;
+  try {
+    parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    throw new Error(`Gemini JSON 파싱 실패 (finishReason=${finishReason}): ${e.message}`);
+  }
 
   // 종목명(코드) h3 소제목 뒤에 로고(실패 시 컬러 배지 폴백) 삽입
   let content = injectLogoBadges(parsed.content, stocks);
