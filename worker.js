@@ -266,19 +266,13 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// 종목명(코드) h3 소제목 앞에 실제 로고 이미지를 시도하고, 로드 실패 시 컬러 배지로 자동 대체
+// 종목명(코드) h3 소제목 앞에 컬러 원형 배지(로고 대용) 삽입 - 외부 이미지 의존 없이 항상 정상 표시
 function injectLogoBadges(html, stocks) {
   let result = html;
   for (const s of stocks) {
     const initial = (s.name || '').slice(0, 1);
     const color = hashToColor(s.name || s.code);
-    const badgeId = `badge_${s.code}`;
-    // 네이버 금융 종목 로고 이미지를 우선 시도 (비공식 경로라 깨질 수 있음)
-    const logoUrl = `https://ssl.pstatic.net/imgstock/fn_up/item/main/${s.code}.png`;
-    const badge =
-      `<img src="${logoUrl}" alt="${escapeHtml(s.name)} 로고" style="width:28px;height:28px;border-radius:50%;margin-right:8px;vertical-align:middle;object-fit:cover;" ` +
-      `onerror="this.style.display='none';document.getElementById('${badgeId}').style.display='inline-flex';">` +
-      `<span id="${badgeId}" style="display:none;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:${color};color:#fff;font-size:13px;font-weight:800;margin-right:8px;vertical-align:middle;">${initial}</span>`;
+    const badge = `<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:${color};color:#fff;font-size:13px;font-weight:800;margin-right:8px;vertical-align:middle;">${initial}</span>`;
     const pattern = new RegExp(`(<h3[^>]*>)(\\s*${escapeRegex(s.name)}\\s*\\(${escapeRegex(s.code)}\\))`, 'g');
     result = result.replace(pattern, `$1${badge}$2`);
   }
