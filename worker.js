@@ -202,7 +202,7 @@ ${listText}
 - 절대 <a> 태그나 URL을 직접 작성하지 마 (링크는 별도 시스템이 삽입함)
 - 출력은 반드시 아래 JSON만, 다른 텍스트 없이: {"title": "...", "content": "..."}`;
 
-  const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+  const aiResponse = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 4000
   });
