@@ -1,14 +1,13 @@
 /**
  * 제로지스톡 (zerozi-stock)
  * kiwoomapi D1(naver_sise)에서 실시간포착 편입 종목을 읽어
- * Gemini로 시황 글 생성 → Blogger 자동 포스팅
+ * Cloudflare Workers AI(Llama)로 시황 글 생성 → Blogger 자동 포스팅
  *
  * - kiwoomapi worker.js와 완전 분리, D1은 읽기전용 조회만 사용
  * - cron: 0 0-6 * * 1-5 (UTC) = KST 09:00~15:00, 매시 정각
  */
 
 const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
-const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 export default {
   async scheduled(event, env, ctx) {
@@ -203,27 +202,20 @@ ${listText}
 - 절대 <a> 태그나 URL을 직접 작성하지 마 (링크는 별도 시스템이 삽입함)
 - 출력은 반드시 아래 JSON만, 다른 텍스트 없이: {"title": "...", "content": "..."}`;
 
-  const res = await fetch(`${GEMINI_API}?key=${env.GEMINI_API_KEY}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 6000 }
-    })
+  const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 4000
   });
 
-  if (!res.ok) {
-    throw new Error(`Gemini API error: ${res.status} ${await res.text()}`);
-  }
-
-  const data = await res.json();
-  const finishReason = data.candidates?.[0]?.finishReason;
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+  const rawText = aiResponse.response || '';
   let parsed;
   try {
-    parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+    // 모델이 JSON 앞뒤에 설명을 덧붙일 수 있어 { ... } 구간만 추출
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    const jsonText = jsonMatch ? jsonMatch[0] : rawText;
+    parsed = JSON.parse(jsonText.replace(/```json|```/g, '').trim());
   } catch (e) {
-    throw new Error(`Gemini JSON 파싱 실패 (finishReason=${finishReason}): ${e.message}`);
+    throw new Error(`Workers AI JSON 파싱 실패: ${e.message} / raw: ${rawText.slice(0, 200)}`);
   }
 
   // 종목명(코드) h3 소제목 뒤에 로고(실패 시 컬러 배지 폴백) 삽입
