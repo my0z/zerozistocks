@@ -218,11 +218,11 @@ ${listText}
   }
   const titleLine = rawText.slice(0, markerIdx).trim();
   const title = titleLine.replace(/^제목\s*[:：]\s*/, '').trim();
-  const content = rawText.slice(markerIdx + marker.length).trim().replace(/^```html\s*|```$/g, '').trim();
-  if (!title || !content) {
+  const rawContent = rawText.slice(markerIdx + marker.length).trim().replace(/^```html\s*|```$/g, '').trim();
+  if (!title || !rawContent) {
     throw new Error(`Workers AI 출력 파싱 실패 (제목/본문 비어있음) / raw: ${rawText.slice(0, 300)}`);
   }
-  const parsed = { title, content };
+  const parsed = { title, content: rawContent };
 
   // 종목명(코드) h3 소제목 뒤에 로고(실패 시 컬러 배지 폴백) 삽입
   let content = injectLogoBadges(parsed.content, stocks);
