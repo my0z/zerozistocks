@@ -41,14 +41,13 @@ async function runPostingJob(env) {
   // 초과분은 다음 실행 회차에서 자동으로 이어서 포스팅됨 (posted 처리 안 하므로 다음 /run에서 다시 픽업)
   alreadyPosted = alreadyPosted.slice(0, MAX_STOCKS_PER_POST);
 
-  // 종목별 실제 뉴스 기사(제목+링크) 조회 - Gemini가 링크를 지어내지 않도록 별도 확보
-  for (const s of alreadyPosted) {
-    s.news = await fetchStockNews(s.name);
-  }
-  // 종목별 09:00(KST)~현재 1분 간격 실제 가격 흐름으로 차트 이미지 생성
-  for (const s of alreadyPosted) {
-    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name);
-  }
+  // 종목별 뉴스+차트를 병렬로 동시 조회 (순차 처리 대비 대폭 단축)
+  await Promise.all(alreadyPosted.map(async s => {
+    [s.news, s.chartUrl] = await Promise.all([
+      fetchStockNews(s.name),
+      buildIntradayChartUrl(env, s.code, s.name)
+    ]);
+  }));
 
   const { title, content } = await generateArticle(env, alreadyPosted);
   const accessToken = await getAccessToken(env);
@@ -205,7 +204,7 @@ ${listText}
 ===본문시작===
 (여기에 HTML 본문)`;
 
-  const aiResponse = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+  const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fast', {
     messages: [{ role: 'user', content: prompt }],
     max_tokens: 4000
   });
