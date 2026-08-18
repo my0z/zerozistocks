@@ -200,7 +200,10 @@ ${listText}
 - 마지막 줄에 "본 글은 투자 참고용이며 투자 판단의 책임은 본인에게 있습니다" 문구 포함
 - HTML 태그 사용 (h3, p, strong, ul, li) — 위 요구사항 그대로 h3로 종목 구분할 것
 - 절대 <a> 태그나 URL을 직접 작성하지 마 (링크는 별도 시스템이 삽입함)
-- 출력은 반드시 아래 JSON만, 다른 텍스트 없이: {"title": "...", "content": "..."}`;
+- 출력 형식 (다른 설명 없이 정확히 이 형식만):
+제목: (여기에 제목 한 줄)
+===본문시작===
+(여기에 HTML 본문)`;
 
   const aiResponse = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
     messages: [{ role: 'user', content: prompt }],
@@ -208,15 +211,18 @@ ${listText}
   });
 
   const rawText = aiResponse.response || '';
-  let parsed;
-  try {
-    // 모델이 JSON 앞뒤에 설명을 덧붙일 수 있어 { ... } 구간만 추출
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    const jsonText = jsonMatch ? jsonMatch[0] : rawText;
-    parsed = JSON.parse(jsonText.replace(/```json|```/g, '').trim());
-  } catch (e) {
-    throw new Error(`Workers AI JSON 파싱 실패: ${e.message} / raw: ${rawText.slice(0, 200)}`);
+  const marker = '===본문시작===';
+  const markerIdx = rawText.indexOf(marker);
+  if (markerIdx === -1) {
+    throw new Error(`Workers AI 출력 형식 오류 (구분자 없음) / raw: ${rawText.slice(0, 300)}`);
   }
+  const titleLine = rawText.slice(0, markerIdx).trim();
+  const title = titleLine.replace(/^제목\s*[:：]\s*/, '').trim();
+  const content = rawText.slice(markerIdx + marker.length).trim().replace(/^```html\s*|```$/g, '').trim();
+  if (!title || !content) {
+    throw new Error(`Workers AI 출력 파싱 실패 (제목/본문 비어있음) / raw: ${rawText.slice(0, 300)}`);
+  }
+  const parsed = { title, content };
 
   // 종목명(코드) h3 소제목 뒤에 로고(실패 시 컬러 배지 폴백) 삽입
   let content = injectLogoBadges(parsed.content, stocks);
