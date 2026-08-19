@@ -239,7 +239,7 @@ function injectCharts(html, stocks) {
   for (const s of stocks) {
     if (!s.chartUrl) continue;
     const chartHtml = `<div style="margin:0 0 20px;border:1px solid #E4E7EC;border-radius:8px;overflow:hidden;padding:8px;background:#fff;"><img src="${s.chartUrl}" alt="${escapeHtml(s.name)} 09시~현재 1분봉 차트" style="width:100%;height:auto;display:block;"></div>`;
-    const afterNewsPattern = new RegExp(`(<h3[^>]*>[^<]*${escapeRegex(s.name)}[^<]*\\(${escapeRegex(s.code)}\\)[^<]*</h3>(?:\\s*<p[^>]*>📰[\\s\\S]*?</p>)?)`);
+    const afterNewsPattern = new RegExp(`(<h3[^>]*>[\\s\\S]*?${escapeRegex(s.name)}[\\s\\S]*?\\(${escapeRegex(s.code)}\\)[\\s\\S]*?</h3>(?:\\s*<p[^>]*>📰[\\s\\S]*?</p>)?)`);
     result = result.replace(afterNewsPattern, `$1${chartHtml}`);
   }
   return result;
@@ -253,7 +253,7 @@ function injectNewsLinks(html, stocks) {
     const newsHtml = `<p style="font-size:13px;color:#6B7280;margin:-4px 0 14px;">📰 관련뉴스: <a href="${s.news.link}" target="_blank" rel="noopener">${escapeHtml(s.news.title)}</a></p>`;
     const pattern = new RegExp(`(</h3>)`, 'g');
     // 종목별로 정확히 해당 h3만 타겟팅하기 위해 종목명 포함 h3 뒤에만 삽입
-    const h3Pattern = new RegExp(`(<h3[^>]*>[^<]*${escapeRegex(s.name)}[^<]*\\(${escapeRegex(s.code)}\\)[^<]*</h3>)`);
+    const h3Pattern = new RegExp(`(<h3[^>]*>[\\s\\S]*?${escapeRegex(s.name)}[\\s\\S]*?\\(${escapeRegex(s.code)}\\)[\\s\\S]*?</h3>)`);
     result = result.replace(h3Pattern, `$1${newsHtml}`);
   }
   return result;
