@@ -75,26 +75,43 @@ async function buildIntradayChartUrl(env, code, name) {
       new Date(r.captured_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })
     );
     const prices = results.map(r => r.price);
+    const isUp = prices[prices.length - 1] >= prices[0];
+    const lineColor = isUp ? '#FF3B30' : '#0A6CFF';
+    const fillColor = isUp ? 'rgba(255,59,48,0.18)' : 'rgba(10,108,255,0.18)';
+    const changePct = (((prices[prices.length - 1] - prices[0]) / prices[0]) * 100).toFixed(2);
+    const arrow = isUp ? '▲' : '▼';
 
     const chartConfig = {
       type: 'line',
       data: {
         labels,
         datasets: [{
-          label: `${name} (09:00~현재, 1분봉)`,
+          label: `${name}  ${arrow} ${changePct}%`,
           data: prices,
-          borderColor: '#0B1E3D',
-          backgroundColor: 'rgba(11,30,61,0.08)',
+          borderColor: lineColor,
+          backgroundColor: fillColor,
           fill: true,
-          pointRadius: 0,
-          borderWidth: 2
+          tension: 0.35,
+          pointRadius: 3,
+          pointBackgroundColor: lineColor,
+          pointBorderColor: '#fff',
+          pointBorderWidth: 2,
+          borderWidth: 3.5
         }]
       },
       options: {
-        plugins: { legend: { display: true, labels: { font: { size: 11 } } } },
+        plugins: {
+          legend: { display: true, labels: { font: { size: 13, weight: 'bold' }, color: lineColor } },
+          title: {
+            display: true,
+            text: `09:00 ~ 현재  1분봉`,
+            font: { size: 11 },
+            color: '#8A8F98'
+          }
+        },
         scales: {
-          x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
-          y: { ticks: { font: { size: 10 } } }
+          x: { grid: { color: '#F0F1F5' }, ticks: { maxTicksLimit: 8, font: { size: 10 }, color: '#8A8F98' } },
+          y: { grid: { color: '#F0F1F5' }, ticks: { font: { size: 10 }, color: '#8A8F98' } }
         }
       }
     };
