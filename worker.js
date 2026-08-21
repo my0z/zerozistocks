@@ -329,10 +329,22 @@ async function postToBlogger(env, accessToken, title, content) {
       'authorization': `Bearer ${accessToken}`,
       'content-type': 'application/json'
     },
-    body: JSON.stringify({ title, content })
+    body: JSON.stringify({ title, content, published: nowKstIso() })
   });
   if (!res.ok) {
     throw new Error(`Blogger API error: ${res.status} ${await res.text()}`);
   }
   return res.json();
+}
+
+// 현재 시각을 KST(+09:00) 기준 ISO 8601 문자열로 반환 - Blogger 게시일이 다른 타임존으로
+// 처리돼 날짜가 하루 어긋나는 것을 방지하기 위해 명시적으로 지정
+function nowKstIso() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date()).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+09:00`;
 }
