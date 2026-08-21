@@ -58,7 +58,8 @@ async function runPostingJob(env) {
   return { ok: true, posted: true, postUrl: post.url, stocks: alreadyPosted.map(s => s.code) };
 }
 
-// 09:00(KST)~현재까지 snapshots의 실제 가격 데이터로 QuickChart 정적 이미지 URL 생성
+// 09:00(KST)~현재까지 snapshots의 실제 가격 데이터로 SVG 차트를 직접 그려 data URI 반환
+// (외부 차트 서비스 의존 없음 - 네트워크 요청 자체가 없어 빠르고 항상 안정적으로 렌더링됨)
 async function buildIntradayChartUrl(env, code, name) {
   try {
     const todayUtc = new Date().toISOString().slice(0, 10); // KST 09:00 = UTC 00:00 같은 날짜
@@ -75,58 +76,101 @@ async function buildIntradayChartUrl(env, code, name) {
       new Date(r.captured_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })
     );
     const prices = results.map(r => r.price);
-    const isUp = prices[prices.length - 1] >= prices[0];
-    const lineColor = isUp ? '#FF3B30' : '#0A6CFF';
-    const fillColor = isUp ? 'rgba(255,59,48,0.18)' : 'rgba(10,108,255,0.18)';
-    const changePct = (((prices[prices.length - 1] - prices[0]) / prices[0]) * 100).toFixed(2);
-    const arrow = isUp ? '▲' : '▼';
-
-    const chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: `${name}  ${arrow} ${changePct}%`,
-          data: prices,
-          borderColor: lineColor,
-          backgroundColor: fillColor,
-          fill: true,
-          tension: 0.35,
-          pointRadius: 3,
-          pointBackgroundColor: lineColor,
-          pointBorderColor: '#fff',
-          pointBorderWidth: 2,
-          borderWidth: 3.5
-        }]
-      },
-      options: {
-        plugins: {
-          legend: { display: true, labels: { font: { size: 13, weight: 'bold' }, color: lineColor } },
-          title: {
-            display: true,
-            text: `09:00 ~ 현재  1분봉`,
-            font: { size: 11 },
-            color: '#8A8F98'
-          }
-        },
-        scales: {
-          x: { grid: { color: '#F0F1F5' }, ticks: { maxTicksLimit: 8, font: { size: 10 }, color: '#8A8F98' } },
-          y: { grid: { color: '#F0F1F5' }, ticks: { font: { size: 10 }, color: '#8A8F98' } }
-        }
-      }
-    };
-
-    const res = await fetch('https://quickchart.io/chart/create', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chart: chartConfig, backgroundColor: 'white', width: 640, height: 300, version: '4' })
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.success ? data.url : null;
+    return renderIntradaySvgDataUri(name, labels, prices);
   } catch {
     return null; // 차트 생성 실패해도 포스팅 자체는 계속 진행
   }
+}
+
+// 가격 배열을 부드러운 곡선(카디널 스플라인) + 그라디언트 + 글로우 필터로 그린 SVG data URI 생성
+function renderIntradaySvgDataUri(name, labels, prices) {
+  const W = 720, H = 340;
+  const padL = 46, padR = 24, padT = 66, padB = 36;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const n = prices.length;
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const range = (max - min) || 1;
+
+  const pts = prices.map((p, i) => [
+    padL + (i / (n - 1)) * plotW,
+    padT + plotH - ((p - min) / range) * plotH
+  ]);
+
+  const isUp = prices[n - 1] >= prices[0];
+  const changePct = (((prices[n - 1] - prices[0]) / prices[0]) * 100).toFixed(2);
+  const color = isUp ? '#FF3B30' : '#0A6CFF';
+  const arrow = isUp ? '▲' : '▼';
+
+  const linePath = smoothPath(pts);
+  const areaPath = `${linePath} L ${pts[n - 1][0]},${padT + plotH} L ${pts[0][0]},${padT + plotH} Z`;
+
+  let grid = '';
+  for (let i = 0; i <= 3; i++) {
+    const gy = padT + (plotH / 3) * i;
+    grid += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="#F1F2F6" stroke-width="1"/>`;
+  }
+
+  const tickIdx = [0, Math.floor((n - 1) / 2), n - 1];
+  const xlabels = tickIdx.map(i =>
+    `<text x="${pts[i][0]}" y="${H - 10}" font-size="11" fill="#9AA0AC" text-anchor="middle" font-family="sans-serif">${labels[i]}</text>`
+  ).join('');
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<defs>
+<linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="${color}" stop-opacity="0.32"/>
+<stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+</linearGradient>
+<filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+<feGaussianBlur stdDeviation="6" result="blur"/>
+<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter>
+</defs>
+<rect width="${W}" height="${H}" fill="#FFFFFF"/>
+<text x="${padL}" y="30" font-size="18" font-weight="700" fill="${color}" font-family="sans-serif">${escapeXml(name)}  ${arrow} ${changePct}%</text>
+<text x="${padL}" y="48" font-size="11" fill="#9AA0AC" font-family="sans-serif">09:00 ~ 현재 · 1분봉</text>
+${grid}
+<path d="${areaPath}" fill="url(#fillGrad)"/>
+<path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" filter="url(#glow)" opacity="0.85"/>
+<path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="${pts[n - 1][0]}" cy="${pts[n - 1][1]}" r="5.5" fill="#fff" stroke="${color}" stroke-width="2.5"/>
+${xlabels}
+</svg>`;
+
+  return svgToDataUri(svg);
+}
+
+// 카디널(캣멀-롬) 스플라인으로 부드러운 곡선 path 생성
+function smoothPath(pts) {
+  if (pts.length < 2) return `M ${pts[0][0]},${pts[0][1]}`;
+  let d = `M ${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+
+function escapeXml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// UTF-8(한글 포함) 문자열을 안전하게 base64 data URI로 변환
+function svgToDataUri(svg) {
+  const bytes = new TextEncoder().encode(svg);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+  return `data:image/svg+xml;base64,${base64}`;
 }
 
 // Google 뉴스 RSS에서 종목명 관련 최신 기사 1건(제목+실제 링크) 조회
