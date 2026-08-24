@@ -133,22 +133,37 @@ function renderIntradaySvgDataUri(name, labels, prices) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <defs>
 <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
-<stop offset="0%" stop-color="${color}" stop-opacity="0.32"/>
+<stop offset="0%" stop-color="${color}" stop-opacity="0.55"/>
+<stop offset="55%" stop-color="${color}" stop-opacity="0.20"/>
 <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
 </linearGradient>
+<linearGradient id="lineGrad" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+<stop offset="45%" stop-color="${color}" stop-opacity="1"/>
+<stop offset="100%" stop-color="${color}" stop-opacity="1"/>
+</linearGradient>
+<radialGradient id="floorShadow" cx="50%" cy="50%" r="50%">
+<stop offset="0%" stop-color="#000000" stop-opacity="0.18"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+</radialGradient>
 <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
 <feGaussianBlur stdDeviation="6" result="blur"/>
 <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
 </filter>
+<filter id="dropShadow" x="-30%" y="-30%" width="160%" height="160%">
+<feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="${color}" flood-opacity="0.4"/>
+</filter>
 </defs>
 <rect width="${W}" height="${H}" fill="#FFFFFF"/>
+<ellipse cx="${padL + plotW / 2}" cy="${padT + plotH + 6}" rx="${plotW / 2}" ry="8" fill="url(#floorShadow)"/>
 <text x="${padL}" y="30" font-size="18" font-weight="700" fill="${color}" font-family="sans-serif">${escapeXml(name)}  ${arrow} ${changePct}%</text>
 <text x="${padL}" y="48" font-size="11" fill="#9AA0AC" font-family="sans-serif">09:00 ~ 현재 · 1분봉</text>
 ${grid}
 <path d="${areaPath}" fill="url(#fillGrad)"/>
 <path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" filter="url(#glow)" opacity="0.85"/>
-<path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="${pts[n - 1][0]}" cy="${pts[n - 1][1]}" r="5.5" fill="#fff" stroke="${color}" stroke-width="2.5"/>
+<path d="${linePath}" fill="none" stroke="url(#lineGrad)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" filter="url(#dropShadow)"/>
+<circle cx="${pts[n - 1][0]}" cy="${pts[n - 1][1]}" r="6.5" fill="${color}" opacity="0.25"/>
+<circle cx="${pts[n - 1][0]}" cy="${pts[n - 1][1]}" r="5.5" fill="#fff" stroke="${color}" stroke-width="2.5" filter="url(#dropShadow)"/>
 ${keyPoints}
 ${xlabels}
 </svg>`;
@@ -187,24 +202,28 @@ function svgToDataUri(svg) {
   return `data:image/svg+xml;base64,${base64}`;
 }
 
-// Google 뉴스 RSS에서 종목명 관련 최신 기사 1건(제목+실제 링크) 조회
+// Google 뉴스 RSS에서 종목명 관련 최신 기사 최대 3건(제목+실제 링크) 조회
 async function fetchStockNews(stockName) {
   try {
     const q = encodeURIComponent(`${stockName} 주식`);
     const res = await fetch(`https://news.google.com/rss/search?q=${q}&hl=ko&gl=KR&ceid=KR:ko`);
-    if (!res.ok) return null;
+    if (!res.ok) return [];
     const xml = await res.text();
-    const itemMatch = xml.match(/<item>([\s\S]*?)<\/item>/);
-    if (!itemMatch) return null;
-    const item = itemMatch[1];
-    const titleMatch = item.match(/<title>([\s\S]*?)<\/title>/);
-    const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
-    if (!titleMatch || !linkMatch) return null;
-    const title = titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim();
-    const link = linkMatch[1].trim();
-    return { title, link };
+    const itemMatches = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 3);
+    const news = [];
+    for (const m of itemMatches) {
+      const item = m[1];
+      const titleMatch = item.match(/<title>([\s\S]*?)<\/title>/);
+      const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
+      if (!titleMatch || !linkMatch) continue;
+      news.push({
+        title: titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
+        link: linkMatch[1].trim()
+      });
+    }
+    return news;
   } catch {
-    return null; // 뉴스 조회 실패해도 포스팅 자체는 계속 진행
+    return []; // 뉴스 조회 실패해도 포스팅 자체는 계속 진행
   }
 }
 
@@ -250,9 +269,12 @@ async function markPosted(env, stocks) {
 }
 
 async function generateArticle(env, stocks) {
-  const listText = stocks.map(s =>
-    `- ${s.name}(${s.code}): 신호=${s.added_state || '-'}, 진입가=${s.entry_price ?? '-'}, 등락률=${s.change_rate != null ? s.change_rate + '%' : '정보없음'}${s.news ? `, 관련뉴스="${s.news.title}"` : ''}`
-  ).join('\n');
+  const listText = stocks.map(s => {
+    const newsPart = (s.news && s.news.length)
+      ? `, 관련뉴스=[${s.news.map(n => `"${n.title}"`).join(', ')}]`
+      : '';
+    return `- ${s.name}(${s.code}): 신호=${s.added_state || '-'}, 진입가=${s.entry_price ?? '-'}, 등락률=${s.change_rate != null ? s.change_rate + '%' : '정보없음'}${newsPart}`;
+  }).join('\n');
 
   const prompt = `너는 15년 경력의 한국 주식시장 애널리스트야. 아래는 실시간 조건검색으로 방금 포착된 급등 신호 종목 리스트야.
 증권사 데일리 노트처럼 짧고 명쾌하게 작성해줘. 미사여구, 장황한 배경 설명 없이 핵심만.
@@ -303,8 +325,21 @@ ${listText}
   content = injectNewsLinks(content, stocks);
   // 종목별 실시간(장중 5분봉) 차트 위젯 삽입
   content = injectCharts(content, stocks);
+  // 본문 최상단에 정확한 발행 시각(시:분:초까지) 명시
+  content = `<p style="font-size:12px;color:#9AA0AC;margin-bottom:14px;">⏱ 발행: ${formatKstTimestamp()}</p>` + content;
 
   return { title: parsed.title, content };
+}
+
+// 발행 시각을 "YYYY-MM-DD HH:MM:SS (KST)" 형식으로 반환
+function formatKstTimestamp() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date()).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} (KST)`;
 }
 
 // 09:00~현재 실제 가격으로 그린 정적 차트 이미지를 종목 섹션 하단에 삽입 (없으면 스킵)
@@ -313,20 +348,21 @@ function injectCharts(html, stocks) {
   for (const s of stocks) {
     if (!s.chartUrl) continue;
     const chartHtml = `<div style="margin:0 0 20px;border:1px solid #E4E7EC;border-radius:8px;overflow:hidden;padding:8px;background:#fff;"><img src="${s.chartUrl}" alt="${escapeHtml(s.name)} 09시~현재 1분봉 차트" style="width:100%;height:auto;display:block;"></div>`;
-    const afterNewsPattern = new RegExp(`(<h3[^>]*>[\\s\\S]*?${escapeRegex(s.name)}[\\s\\S]*?\\(${escapeRegex(s.code)}\\)[\\s\\S]*?</h3>(?:\\s*<p[^>]*>📰[\\s\\S]*?</p>)?)`);
+    const afterNewsPattern = new RegExp(`(<h3[^>]*>[\\s\\S]*?${escapeRegex(s.name)}[\\s\\S]*?\\(${escapeRegex(s.code)}\\)[\\s\\S]*?</h3>(?:\\s*<p[^>]*>📰[\\s\\S]*?</p>\\s*<ul[^>]*>[\\s\\S]*?</ul>)?)`);
     result = result.replace(afterNewsPattern, `$1${chartHtml}`);
   }
   return result;
 }
 
-// h3 종목 섹션 바로 뒤에 실제 뉴스 링크(제목 그대로, 실제 URL)를 삽입
+// h3 종목 섹션 바로 뒤에 실제 뉴스 링크 목록(제목 그대로, 실제 URL)을 삽입
 function injectNewsLinks(html, stocks) {
   let result = html;
   for (const s of stocks) {
-    if (!s.news) continue;
-    const newsHtml = `<p style="font-size:13px;color:#6B7280;margin:-4px 0 14px;">📰 관련뉴스: <a href="${s.news.link}" target="_blank" rel="noopener">${escapeHtml(s.news.title)}</a></p>`;
-    const pattern = new RegExp(`(</h3>)`, 'g');
-    // 종목별로 정확히 해당 h3만 타겟팅하기 위해 종목명 포함 h3 뒤에만 삽입
+    if (!s.news || !s.news.length) continue;
+    const items = s.news.map(n =>
+      `<li><a href="${n.link}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a></li>`
+    ).join('');
+    const newsHtml = `<p style="font-size:13px;color:#6B7280;margin:-4px 0 6px;">📰 관련뉴스</p><ul style="font-size:13px;color:#6B7280;margin:0 0 14px;padding-left:20px;">${items}</ul>`;
     const h3Pattern = new RegExp(`(<h3[^>]*>[\\s\\S]*?${escapeRegex(s.name)}[\\s\\S]*?\\(${escapeRegex(s.code)}\\)[\\s\\S]*?</h3>)`);
     result = result.replace(h3Pattern, `$1${newsHtml}`);
   }
