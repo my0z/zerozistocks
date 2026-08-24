@@ -26,7 +26,7 @@ export default {
   }
 };
 
-const MAX_STOCKS_PER_POST = 3; // 상세 설명이 길어서 한 번에 너무 많으면 응답이 잘림
+const MAX_STOCKS_PER_POST = 6; // 상세 설명이 길어서 한 번에 너무 많으면 응답이 잘림
 
 async function runPostingJob(env) {
   const stocks = await getFreshWatchlistStocks(env);
@@ -117,6 +117,19 @@ function renderIntradaySvgDataUri(name, labels, prices) {
     `<text x="${pts[i][0]}" y="${H - 10}" font-size="11" fill="#9AA0AC" text-anchor="middle" font-family="sans-serif">${labels[i]}</text>`
   ).join('');
 
+  const maxIdx = prices.indexOf(max);
+  const minIdx = prices.indexOf(min);
+  // 시작/최고/최저/현재 - 중복 인덱스는 한 번만 표시
+  const keyIdx = [...new Set([0, maxIdx, minIdx, n - 1])];
+  const fmtPrice = (p) => Math.round(p).toLocaleString('ko-KR');
+  const keyPoints = keyIdx.map(i => {
+    const [x, y] = pts[i];
+    const above = y > padT + 16; // 상단 여백 부족하면 라벨을 점 아래로
+    const labelY = above ? y - 12 : y + 20;
+    return `<circle cx="${x}" cy="${y}" r="4" fill="#fff" stroke="${color}" stroke-width="2"/>` +
+      `<text x="${x}" y="${labelY}" font-size="11" font-weight="700" fill="${color}" text-anchor="middle" font-family="sans-serif">${fmtPrice(prices[i])}</text>`;
+  }).join('');
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <defs>
 <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
@@ -136,6 +149,7 @@ ${grid}
 <path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" filter="url(#glow)" opacity="0.85"/>
 <path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="${pts[n - 1][0]}" cy="${pts[n - 1][1]}" r="5.5" fill="#fff" stroke="${color}" stroke-width="2.5"/>
+${keyPoints}
 ${xlabels}
 </svg>`;
 
@@ -250,11 +264,11 @@ ${listText}
 - 제목: 간결하고 핵심이 드러나는 한 줄 (종목명 포함)
 - 도입부: 1~2문장으로 오늘 포착 종목군의 공통 특징만 짧게
 - 종목별 섹션(각 종목마다 <h3> 소제목으로 "종목명(코드)" 구분):
-  각 섹션은 2~3문장으로 짧게, 다음을 압축해서 담을 것:
-  - 포착 신호(added_state)와 현재 가격 흐름(등락률) 한 줄 요약
-  - 관련뉴스가 있으면 제목을 자연스럽게 한 문장에 녹여서 언급 (링크는 절대 만들지 마, 별도로 삽입됨)
-  - 체크포인트 한 가지만 간결하게
-  - 불필요한 수식어, 반복 설명 금지. 애널리스트가 시간 없을 때 쓰는 메모 톤
+  아래 세 가지를 각각 별도의 <p> 문단으로 나눠서 작성 (한 문단에 다 몰아넣지 말 것):
+  1문단) 포착 신호(added_state)와 현재 가격 흐름(등락률) 한 줄 요약
+  2문단) 관련뉴스가 있으면 제목을 자연스럽게 한 문장에 녹여서 언급 (링크는 절대 만들지 마, 별도로 삽입됨)
+  3문단) 체크포인트 한 가지만 간결하게
+  각 문단은 1문장, 불필요한 수식어·반복 설명 금지. 애널리스트가 시간 없을 때 쓰는 메모 톤
 - 마무리: 1문장 총평
 - 마지막 줄에 "본 글은 투자 참고용이며 투자 판단의 책임은 본인에게 있습니다" 문구 포함
 - HTML 태그 사용 (h3, p, strong, ul, li) — 위 요구사항 그대로 h3로 종목 구분할 것
@@ -266,7 +280,7 @@ ${listText}
 
   const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fast', {
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 2000
+    max_tokens: 3500
   });
 
   const rawText = aiResponse.response || '';
@@ -324,16 +338,30 @@ function escapeHtml(str) {
 }
 
 // 종목명(코드) h3 소제목 앞에 컬러 원형 배지(로고 대용) 삽입 - 외부 이미지 의존 없이 항상 정상 표시
+// + h3 클릭 시 종목코드 클립보드 복사 후 영웅문 앱 실행 시도
 function injectLogoBadges(html, stocks) {
   let result = html;
   for (const s of stocks) {
     const initial = (s.name || '').slice(0, 1);
     const color = hashToColor(s.name || s.code);
     const badge = `<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:${color};color:#fff;font-size:13px;font-weight:800;margin-right:8px;vertical-align:middle;">${initial}</span>`;
-    const pattern = new RegExp(`(<h3[^>]*>)(\\s*${escapeRegex(s.name)}\\s*\\(${escapeRegex(s.code)}\\))`, 'g');
-    result = result.replace(pattern, `$1${badge}$2`);
+    const hint = `<span style="font-size:11px;font-weight:400;color:#9AA0AC;margin-left:8px;">(탭하여 코드 복사·영웅문 실행)</span>`;
+    const onclick = buildKiwoomLaunchJs(s.code);
+    const pattern = new RegExp(`<h3([^>]*)>(\\s*${escapeRegex(s.name)}\\s*\\(${escapeRegex(s.code)}\\))`, 'g');
+    result = result.replace(pattern, `<h3$1 onclick="${onclick}" style="cursor:pointer;">${badge}$2${hint}`);
   }
   return result;
+}
+
+// 클릭 시: 종목코드 클립보드 복사 → 안드로이드는 영웅문 패키지 intent 실행(미설치 시 자동으로 스토어 이동),
+// iOS는 추정 URL 스킴으로 시도(공식 확인된 값 아님 - 동작 안 할 수 있음)
+function buildKiwoomLaunchJs(code) {
+  const js =
+    `try{navigator.clipboard.writeText('${code}')}catch(e){};` +
+    `var ua=navigator.userAgent;` +
+    `if(/Android/i.test(ua)){location.href='intent://#Intent;package=com.kiwoom.heromts;end'}` +
+    `else{location.href='kiwoom://'}`;
+  return js.replace(/"/g, '&quot;');
 }
 
 function escapeRegex(str) {
