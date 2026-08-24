@@ -127,7 +127,7 @@ function renderIntradaySvgDataUri(name, labels, prices) {
     const above = y > padT + 16; // 상단 여백 부족하면 라벨을 점 아래로
     const labelY = above ? y - 12 : y + 20;
     return `<circle cx="${x}" cy="${y}" r="4" fill="#fff" stroke="${color}" stroke-width="2"/>` +
-      `<text x="${x}" y="${labelY}" font-size="11" font-weight="700" fill="${color}" text-anchor="middle" font-family="sans-serif">${fmtPrice(prices[i])}</text>`;
+      `<text x="${x}" y="${labelY}" font-size="33" font-weight="700" fill="${color}" text-anchor="middle" font-family="sans-serif">${fmtPrice(prices[i])}</text>`;
   }).join('');
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
@@ -359,7 +359,7 @@ function buildKiwoomLaunchJs(code) {
   const js =
     `try{navigator.clipboard.writeText('${code}')}catch(e){};` +
     `var ua=navigator.userAgent;` +
-    `if(/Android/i.test(ua)){location.href='intent://#Intent;package=com.kiwoom.heromts;end'}` +
+    `if(/Android/i.test(ua)){location.href='intent://#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.kiwoom.heromts;end'}` +
     `else{location.href='kiwoom://'}`;
   return js.replace(/"/g, '&quot;');
 }
