@@ -11,13 +11,23 @@ const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runPostingJob(env));
+    if (event.cron === '1 0-6 * * 1-5') {
+      ctx.waitUntil(runProfitReportJob(env));
+    } else {
+      ctx.waitUntil(runPostingJob(env));
+    }
   },
 
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/run') {
       const result = await runPostingJob(env);
+      return new Response(JSON.stringify(result, null, 2), {
+        headers: { 'content-type': 'application/json; charset=utf-8' }
+      });
+    }
+    if (url.pathname === '/run-profits') {
+      const result = await runProfitReportJob(env);
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'content-type': 'application/json; charset=utf-8' }
       });
@@ -56,6 +66,134 @@ async function runPostingJob(env) {
   await markPosted(env, alreadyPosted);
 
   return { ok: true, posted: true, postUrl: post.url, stocks: alreadyPosted.map(s => s.code) };
+}
+
+// 최근 1시간 내 익절 처리된 종목을 모아 발행 (매시 정각, cron-job.org 별도 등록)
+async function runProfitReportJob(env) {
+  const stocks = await getRecentTakeProfitStocks(env);
+  if (stocks.length === 0) {
+    return { ok: true, posted: false, reason: 'no recent take-profit stocks' };
+  }
+
+  const alreadyPosted = await filterAlreadyPostedProfit(env, stocks);
+  if (alreadyPosted.length === 0) {
+    return { ok: true, posted: false, reason: 'all already posted this hour' };
+  }
+
+  // 익절 이후 현재까지 등락 추적: 최신 시세를 snapshots에서 조회
+  await Promise.all(alreadyPosted.map(async s => {
+    s.currentPrice = await getLatestPrice(env, s.code);
+    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name);
+  }));
+
+  const { title, content } = await generateProfitArticle(env, alreadyPosted);
+  const accessToken = await getAccessToken(env);
+  const post = await postToBlogger(env, accessToken, title, content);
+
+  await markPostedProfit(env, alreadyPosted);
+
+  return { ok: true, posted: true, postUrl: post.url, stocks: alreadyPosted.map(s => s.code) };
+}
+
+// watchlist_performance에서 최근 1시간 내 "익절삭제" 표시된 종목 조회 (읽기전용)
+async function getRecentTakeProfitStocks(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT code, name, entry_price, later_price, pnl_pct, recorded_at
+     FROM watchlist_performance
+     WHERE added_state LIKE '%익절삭제%'
+       AND recorded_at >= datetime('now', '-1 hour') || '.000Z'
+     ORDER BY recorded_at DESC
+     LIMIT 20`
+  ).all();
+  return results || [];
+}
+
+// 종목코드+시각 조합 기준 당일 중복 발행 방지 (KV 사용, 익절 리포트 전용 키 공간)
+async function filterAlreadyPostedProfit(env, stocks) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fresh = [];
+  for (const s of stocks) {
+    const key = `posted-profit:${today}:${s.code}:${s.recorded_at}`;
+    const exists = await env.ZEROZI_KV.get(key);
+    if (!exists) fresh.push(s);
+  }
+  return fresh;
+}
+
+async function markPostedProfit(env, stocks) {
+  const today = new Date().toISOString().slice(0, 10);
+  for (const s of stocks) {
+    const key = `posted-profit:${today}:${s.code}:${s.recorded_at}`;
+    await env.ZEROZI_KV.put(key, '1', { expirationTtl: 60 * 60 * 24 * 2 });
+  }
+}
+
+// snapshots에서 해당 종목의 가장 최근 가격 조회 (익절 후 등락 계산용)
+async function getLatestPrice(env, code) {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT price FROM snapshots WHERE code = ? ORDER BY captured_at DESC LIMIT 1`
+    ).bind(code).first();
+    return row ? row.price : null;
+  } catch {
+    return null;
+  }
+}
+
+// 익절 리포트 전용 Llama 프롬프트 - 익절가/현재가 기준 이후 흐름을 중심으로 짧게 작성
+async function generateProfitArticle(env, stocks) {
+  const listText = stocks.map(s => {
+    const afterPct = (s.currentPrice != null && s.entry_price)
+      ? (((s.currentPrice - s.later_price) / s.later_price) * 100).toFixed(2)
+      : null;
+    return `- ${s.name}(${s.code}): 진입가=${s.entry_price}, 익절시점가=${s.later_price}, 익절시 수익률=${s.pnl_pct}%` +
+      (afterPct != null ? `, 익절 이후 현재가=${s.currentPrice}(익절가 대비 ${afterPct}%)` : '');
+  }).join('\n');
+
+  const prompt = `너는 15년 경력의 한국 주식시장 애널리스트야. 아래는 최근 1시간 내 익절(목표가 도달)로 워치리스트에서 정리된 종목 리스트야.
+증권사 데일리 노트처럼 짧고 명쾌하게 "사후 검증" 리포트를 작성해줘.
+
+[익절 종목]
+${listText}
+
+요구사항:
+- 제목: 간결한 한 줄 (예: "오늘 익절 종목 점검" 류, 종목명 포함 가능)
+- 도입부: 1~2문장으로 이번 시간 익절 종목군의 공통 특징만 짧게
+- 종목별 섹션(각 종목마다 <h3> 소제목으로 "종목명(코드)" 구분), 각각 2~3문장:
+  1문단) 진입가 대비 익절 시점 수익률 요약
+  2문단) 익절 이후 현재까지 추가로 올랐는지 내렸는지 (데이터 있으면 수치로, "더 갈 수 있었다/제때 나왔다" 류 짧은 평가)
+  각 문단 1문장, 불필요한 수식어 금지
+- 마무리: 1문장 총평
+- 마지막 줄에 "본 글은 투자 참고용이며 투자 판단의 책임은 본인에게 있습니다" 문구 포함
+- HTML 태그 사용 (h3, p, strong, ul, li)
+- 출력 형식 (다른 설명 없이 정확히 이 형식만):
+제목: (여기에 제목 한 줄)
+===본문시작===
+(여기에 HTML 본문)`;
+
+  const aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fast', {
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 3500
+  });
+
+  const rawText = aiResponse.response || '';
+  const marker = '===본문시작===';
+  const markerIdx = rawText.indexOf(marker);
+  if (markerIdx === -1) {
+    throw new Error(`Workers AI 출력 형식 오류 (구분자 없음) / raw: ${rawText.slice(0, 300)}`);
+  }
+  const titleLine = rawText.slice(0, markerIdx).trim();
+  const title = titleLine.replace(/^제목\s*[:：]\s*/, '').trim();
+  const rawContent = rawText.slice(markerIdx + marker.length).trim().replace(/^```html\s*|```$/g, '').trim();
+  if (!title || !rawContent) {
+    throw new Error(`Workers AI 출력 파싱 실패 (제목/본문 비어있음) / raw: ${rawText.slice(0, 300)}`);
+  }
+
+  let content = injectLogoBadges(rawContent, stocks);
+  content = injectCharts(content, stocks);
+  content = `<p style="font-size:12px;color:#9AA0AC;margin-bottom:14px;">⏱ 발행: ${formatKstTimestamp()}</p>` + content;
+
+  return { title, content };
 }
 
 // 09:00(KST)~현재까지 snapshots의 실제 가격 데이터로 SVG 차트를 직접 그려 data URI 반환
