@@ -389,14 +389,14 @@ function injectLogoBadges(html, stocks) {
   return result;
 }
 
-// 클릭 시: 종목코드 클립보드 복사 → 안드로이드는 영웅문 패키지 intent 실행(미설치 시 자동으로 스토어 이동),
-// iOS는 추정 URL 스킴으로 시도(공식 확인된 값 아님 - 동작 안 할 수 있음)
+// 클릭 시: 종목코드 클립보드 복사 → 영웅문 앱 실행
+// heromts://heromtshost 는 kiwoomapi 프로젝트에서 실제 APK 매니페스트를 직접 까서 확인한
+// 진짜 등록된 스킴 (intent:// 패키지 실행 방식은 실기기에서 전부 실패했었음 - 검증 완료된 값)
+// 종목코드로 특정 화면 이동은 안 됨(앱만 켜짐) - 코드는 클립보드 복사로 대신 전달
 function buildKiwoomLaunchJs(code) {
   const js =
     `try{navigator.clipboard.writeText('${code}')}catch(e){};` +
-    `var ua=navigator.userAgent;` +
-    `if(/Android/i.test(ua)){location.href='intent://#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=com.kiwoom.heromts;end'}` +
-    `else{location.href='kiwoom://'}`;
+    `location.href='heromts://heromtshost'`;
   return js.replace(/"/g, '&quot;');
 }
 
