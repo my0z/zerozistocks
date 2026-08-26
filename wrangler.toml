@@ -39,6 +39,10 @@ binding = "AI"
 binding = "SIGNAL_ANALYTICS"
 dataset = "kiwoomapi_signals"
 
+[placement]
+mode = "smart"
+
+
 # secrets (wrangler secret put 으로 개별 등록, toml에는 값 넣지 않음)
 # GOOGLE_CLIENT_ID
 # GOOGLE_CLIENT_SECRET
