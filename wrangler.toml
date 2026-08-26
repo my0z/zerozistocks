@@ -4,8 +4,9 @@ compatibility_date = "2026-08-10"
 keep_vars = true
 
 [triggers]
-crons = ["0 0-6 * * 1-5", "1 0-6 * * 1-5"]
-# 0분: 신규 편입 발행(/run), 1분: 익절 리포트(/run-profits) - KST 09:00~15:00 평일 매시
+crons = ["0 0-6 * * 1-5", "1 0-6 * * 1-5", "2 0-6 * * 1-5"]
+# 0분: 신규 편입 발행(/run), 1분: 익절 리포트(/run-profits), 2분: 손절 리포트(/run-stoploss)
+# KST 09:00~15:00 평일 매시
 
 [observability]
 enabled = false

@@ -12,7 +12,9 @@ const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
 export default {
   async scheduled(event, env, ctx) {
     if (event.cron === '1 0-6 * * 1-5') {
-      ctx.waitUntil(runProfitReportJob(env));
+      ctx.waitUntil(runExitReportJob(env, 'take'));
+    } else if (event.cron === '2 0-6 * * 1-5') {
+      ctx.waitUntil(runExitReportJob(env, 'stop'));
     } else {
       ctx.waitUntil(runPostingJob(env));
     }
@@ -27,7 +29,13 @@ export default {
       });
     }
     if (url.pathname === '/run-profits') {
-      const result = await runProfitReportJob(env);
+      const result = await runExitReportJob(env, 'take');
+      return new Response(JSON.stringify(result, null, 2), {
+        headers: { 'content-type': 'application/json; charset=utf-8' }
+      });
+    }
+    if (url.pathname === '/run-stoploss') {
+      const result = await runExitReportJob(env, 'stop');
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'content-type': 'application/json; charset=utf-8' }
       });
@@ -68,43 +76,45 @@ async function runPostingJob(env) {
   return { ok: true, posted: true, postUrl: post.url, stocks: alreadyPosted.map(s => s.code) };
 }
 
-// 최근 1시간 내 익절 처리된 종목을 모아 발행 (매시 정각, cron-job.org 별도 등록)
-async function runProfitReportJob(env) {
-  const stocks = await getRecentTakeProfitStocks(env);
+// 최근 1시간 내 익절/손절 처리된 종목을 모아 발행 (매시 정각+1분, +2분)
+// kind: 'take' (익절삭제) | 'stop' (손절삭제)
+async function runExitReportJob(env, kind) {
+  const stocks = await getRecentExitStocks(env, kind);
   if (stocks.length === 0) {
-    return { ok: true, posted: false, reason: 'no recent take-profit stocks' };
+    return { ok: true, posted: false, reason: `no recent ${kind}-exit stocks` };
   }
 
-  const alreadyPosted = await filterAlreadyPostedProfit(env, stocks);
+  const alreadyPosted = await filterAlreadyPostedExit(env, stocks, kind);
   if (alreadyPosted.length === 0) {
     return { ok: true, posted: false, reason: 'all already posted this hour' };
   }
 
-  // 익절 이후 현재까지 등락 추적: 최신 시세를 snapshots에서 조회
+  // 이탈 이후 현재까지 등락 추적: 최신 시세를 snapshots에서 조회
   await Promise.all(alreadyPosted.map(async s => {
     s.currentPrice = await getLatestPrice(env, s.code);
     s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name);
   }));
 
-  const { title, content } = await generateProfitArticle(env, alreadyPosted);
+  const { title, content } = await generateExitArticle(env, alreadyPosted, kind);
   const accessToken = await getAccessToken(env);
   const post = await postToBlogger(env, accessToken, title, content);
 
-  await markPostedProfit(env, alreadyPosted);
+  await markPostedExit(env, alreadyPosted, kind);
 
   return { ok: true, posted: true, postUrl: post.url, stocks: alreadyPosted.map(s => s.code) };
 }
 
-// watchlist_performance에서 최근 1시간 내 "익절삭제" 표시된 종목 조회 (읽기전용)
-async function getRecentTakeProfitStocks(env) {
+// watchlist_performance에서 최근 1시간 내 익절/손절 표시된 종목 조회 (읽기전용)
+async function getRecentExitStocks(env, kind) {
+  const label = kind === 'take' ? '익절삭제' : '손절삭제';
   const { results } = await env.DB.prepare(
     `SELECT code, name, entry_price, later_price, pnl_pct, recorded_at
      FROM watchlist_performance
-     WHERE added_state LIKE '%익절삭제%'
+     WHERE added_state LIKE ?
        AND recorded_at >= datetime('now', '-1 hour') || '.000Z'
      ORDER BY recorded_at DESC
      LIMIT 40`
-  ).all();
+  ).bind(`%${label}%`).all();
   if (!results) return [];
   // 같은 종목이 horizon_min(30/60분) 등으로 여러 줄 기록될 수 있어 code 기준 최신 1건만 유지
   const seen = new Set();
@@ -117,27 +127,27 @@ async function getRecentTakeProfitStocks(env) {
   return deduped.slice(0, 20);
 }
 
-// 종목코드+시각 조합 기준 당일 중복 발행 방지 (KV 사용, 익절 리포트 전용 키 공간)
-async function filterAlreadyPostedProfit(env, stocks) {
+// 종목코드+시각 조합 기준 당일 중복 발행 방지 (KV 사용, 익절/손절 리포트 각각 별도 키 공간)
+async function filterAlreadyPostedExit(env, stocks, kind) {
   const today = new Date().toISOString().slice(0, 10);
   const fresh = [];
   for (const s of stocks) {
-    const key = `posted-profit:${today}:${s.code}:${s.recorded_at}`;
+    const key = `posted-${kind}:${today}:${s.code}:${s.recorded_at}`;
     const exists = await env.ZEROZI_KV.get(key);
     if (!exists) fresh.push(s);
   }
   return fresh;
 }
 
-async function markPostedProfit(env, stocks) {
+async function markPostedExit(env, stocks, kind) {
   const today = new Date().toISOString().slice(0, 10);
   for (const s of stocks) {
-    const key = `posted-profit:${today}:${s.code}:${s.recorded_at}`;
+    const key = `posted-${kind}:${today}:${s.code}:${s.recorded_at}`;
     await env.ZEROZI_KV.put(key, '1', { expirationTtl: 60 * 60 * 24 * 2 });
   }
 }
 
-// snapshots에서 해당 종목의 가장 최근 가격 조회 (익절 후 등락 계산용)
+// snapshots에서 해당 종목의 가장 최근 가격 조회 (익절/손절 후 등락 계산용)
 async function getLatestPrice(env, code) {
   try {
     const row = await env.DB.prepare(
@@ -149,28 +159,36 @@ async function getLatestPrice(env, code) {
   }
 }
 
-// 익절 리포트 전용 Llama 프롬프트 - 익절가/현재가 기준 이후 흐름을 중심으로 짧게 작성
-async function generateProfitArticle(env, stocks) {
+// 익절/손절 리포트 공용 Llama 프롬프트 - 이탈가/현재가 기준 이후 흐름을 중심으로 짧게 작성
+async function generateExitArticle(env, stocks, kind) {
+  const label = kind === 'take' ? '익절' : '손절';
   const listText = stocks.map(s => {
-    const afterPct = (s.currentPrice != null && s.entry_price)
+    const afterPct = (s.currentPrice != null && s.later_price)
       ? (((s.currentPrice - s.later_price) / s.later_price) * 100).toFixed(2)
       : null;
-    return `- ${s.name}(${s.code}): 진입가=${s.entry_price}, 익절시점가=${s.later_price}, 익절시 수익률=${s.pnl_pct}%` +
-      (afterPct != null ? `, 익절 이후 현재가=${s.currentPrice}(익절가 대비 ${afterPct}%)` : '');
+    return `- ${s.name}(${s.code}): 진입가=${s.entry_price}, ${label}시점가=${s.later_price}, ${label}시 수익률=${s.pnl_pct}%` +
+      (afterPct != null ? `, ${label} 이후 현재가=${s.currentPrice}(${label}가 대비 ${afterPct}%)` : '');
   }).join('\n');
 
-  const prompt = `너는 15년 경력의 한국 주식시장 애널리스트야. 아래는 최근 1시간 내 익절(목표가 도달)로 워치리스트에서 정리된 종목 리스트야.
+  const situationHint = kind === 'take'
+    ? '목표가 도달로 워치리스트에서 정리된'
+    : '손절 기준에 걸려 워치리스트에서 정리된';
+  const evalHint = kind === 'take'
+    ? '"더 갈 수 있었다/제때 나왔다" 류 짧은 평가'
+    : '"손절이 적절했다/이후 반등했다" 류 짧은 평가';
+
+  const prompt = `너는 15년 경력의 한국 주식시장 애널리스트야. 아래는 최근 1시간 내 ${situationHint} 종목 리스트야.
 증권사 데일리 노트처럼 짧고 명쾌하게 "사후 검증" 리포트를 작성해줘.
 
-[익절 종목]
+[${label} 종목]
 ${listText}
 
 요구사항:
-- 제목: 간결한 한 줄 (예: "오늘 익절 종목 점검" 류, 종목명 포함 가능)
-- 도입부: 1~2문장으로 이번 시간 익절 종목군의 공통 특징만 짧게
+- 제목: 간결한 한 줄 (예: "오늘 ${label} 종목 점검" 류, 종목명 포함 가능)
+- 도입부: 1~2문장으로 이번 시간 ${label} 종목군의 공통 특징만 짧게
 - 종목별 섹션(각 종목마다 <h3> 소제목으로 "종목명(코드)" 구분), 각각 2~3문장:
-  1문단) 진입가 대비 익절 시점 수익률 요약
-  2문단) 익절 이후 현재까지 추가로 올랐는지 내렸는지 (데이터 있으면 수치로, "더 갈 수 있었다/제때 나왔다" 류 짧은 평가)
+  1문단) 진입가 대비 ${label} 시점 수익률 요약
+  2문단) ${label} 이후 현재까지 추가로 올랐는지 내렸는지 (데이터 있으면 수치로, ${evalHint})
   각 문단 1문장, 불필요한 수식어 금지
 - 마무리: 1문장 총평
 - 마지막 줄에 "본 글은 투자 참고용이며 투자 판단의 책임은 본인에게 있습니다" 문구 포함
