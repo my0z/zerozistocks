@@ -8,6 +8,34 @@
  */
 
 const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
+const VIDEOS_API_URL = 'https://videos.usb.kr/api/generate';
+
+// videos.usb.kr에 영상 생성을 트리거하고 링크를 글 본문에 붙임 — 실패해도 블로그 발행 자체는 막지 않음(부가 기능이라 있으면 좋고 없어도 무방)
+async function attachVideoLink(env, topic, content) {
+  if (!env.VIDEO_API_KEY) return content; // 키 미설정 시 조용히 스킵
+  try {
+    const res = await fetch(VIDEOS_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': env.VIDEO_API_KEY },
+      body: JSON.stringify({ topic: topic.slice(0, 100) }),
+    });
+    if (!res.ok) {
+      await res.text().catch(() => {});
+      console.log(`영상 생성 요청 실패: HTTP ${res.status}`);
+      return content;
+    }
+    const data = await res.json();
+    if (!data?.ok || !data?.url) {
+      console.log(`영상 생성 응답 이상 — raw: ${JSON.stringify(data).slice(0, 200)}`);
+      return content;
+    }
+    console.log(`영상 생성 성공, 링크 삽입: ${data.url}`);
+    return content + `<p style="margin-top:16px;"><a href="${data.url}" target="_blank">📹 관련 영상 보기</a></p>`;
+  } catch (e) {
+    console.log(`영상 생성 요청 오류: ${e.message}`);
+    return content;
+  }
+}
 
 export default {
   async scheduled(event, env, ctx) {
@@ -67,7 +95,9 @@ async function runPostingJob(env) {
     ]);
   }));
 
-  const { title, content } = await generateArticle(env, alreadyPosted);
+  const { title, content: rawContent } = await generateArticle(env, alreadyPosted);
+  const videoTopic = `${alreadyPosted.map(s => s.name).slice(0, 2).join(', ')} 실시간포착 급등 이유 분석`;
+  const content = await attachVideoLink(env, videoTopic, rawContent);
   const accessToken = await getAccessToken(env);
   const post = await postToBlogger(env, accessToken, title, content);
 
@@ -95,7 +125,10 @@ async function runExitReportJob(env, kind) {
     s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name);
   }));
 
-  const { title, content } = await generateExitArticle(env, alreadyPosted, kind);
+  const { title, content: rawContent } = await generateExitArticle(env, alreadyPosted, kind);
+  const label = kind === 'take' ? '익절' : '손절';
+  const videoTopic = `${alreadyPosted.map(s => s.name).slice(0, 2).join(', ')} ${label} 리포트`;
+  const content = await attachVideoLink(env, videoTopic, rawContent);
   const accessToken = await getAccessToken(env);
   const post = await postToBlogger(env, accessToken, title, content);
 
