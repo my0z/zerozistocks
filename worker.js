@@ -103,9 +103,18 @@ async function getRecentTakeProfitStocks(env) {
      WHERE added_state LIKE '%익절삭제%'
        AND recorded_at >= datetime('now', '-1 hour') || '.000Z'
      ORDER BY recorded_at DESC
-     LIMIT 20`
+     LIMIT 40`
   ).all();
-  return results || [];
+  if (!results) return [];
+  // 같은 종목이 horizon_min(30/60분) 등으로 여러 줄 기록될 수 있어 code 기준 최신 1건만 유지
+  const seen = new Set();
+  const deduped = [];
+  for (const r of results) {
+    if (seen.has(r.code)) continue;
+    seen.add(r.code);
+    deduped.push(r);
+  }
+  return deduped.slice(0, 20);
 }
 
 // 종목코드+시각 조합 기준 당일 중복 발행 방지 (KV 사용, 익절 리포트 전용 키 공간)
