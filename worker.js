@@ -8,34 +8,6 @@
  */
 
 const BLOGGER_API = 'https://www.googleapis.com/blogger/v3/blogs';
-const VIDEOS_API_URL = 'https://videos.usb.kr/api/generate';
-
-// videos.usb.kr에 영상 생성을 트리거하고 링크를 글 본문에 붙임 — 실패해도 블로그 발행 자체는 막지 않음(부가 기능이라 있으면 좋고 없어도 무방)
-async function attachVideoLink(env, topic, content) {
-  if (!env.VIDEO_API_KEY) return content; // 키 미설정 시 조용히 스킵
-  try {
-    const res = await fetch(VIDEOS_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': env.VIDEO_API_KEY },
-      body: JSON.stringify({ topic: topic.slice(0, 100) }),
-    });
-    if (!res.ok) {
-      await res.text().catch(() => {});
-      console.log(`영상 생성 요청 실패: HTTP ${res.status}`);
-      return content;
-    }
-    const data = await res.json();
-    if (!data?.ok || !data?.url) {
-      console.log(`영상 생성 응답 이상 — raw: ${JSON.stringify(data).slice(0, 200)}`);
-      return content;
-    }
-    console.log(`영상 생성 성공, 링크 삽입: ${data.url}`);
-    return content + `<p style="margin-top:16px;"><a href="${data.url}" target="_blank">📹 관련 영상 보기</a></p>`;
-  } catch (e) {
-    console.log(`영상 생성 요청 오류: ${e.message}`);
-    return content;
-  }
-}
 
 export default {
   async scheduled(event, env, ctx) {
@@ -89,15 +61,15 @@ async function runPostingJob(env) {
 
   // 종목별 뉴스+차트를 병렬로 동시 조회 (순차 처리 대비 대폭 단축)
   await Promise.all(alreadyPosted.map(async s => {
-    [s.news, s.chartUrl] = await Promise.all([
+    const [news, riskLevels] = await Promise.all([
       fetchStockNews(s.name),
-      buildIntradayChartUrl(env, s.code, s.name)
+      getRiskLevels(env, s.code)
     ]);
+    s.news = news;
+    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name, null, riskLevels);
   }));
 
-  const { title, content: rawContent } = await generateArticle(env, alreadyPosted);
-  const videoTopic = `${alreadyPosted.map(s => s.name).slice(0, 2).join(', ')} 실시간포착 급등 이유 분석`;
-  const content = await attachVideoLink(env, videoTopic, rawContent);
+  const { title, content } = await generateArticle(env, alreadyPosted);
   const accessToken = await getAccessToken(env);
   const post = await postToBlogger(env, accessToken, title, content);
 
@@ -120,15 +92,17 @@ async function runExitReportJob(env, kind) {
   }
 
   // 이탈 이후 현재까지 등락 추적: 최신 시세를 snapshots에서 조회
+  const exitLabel = kind === 'take' ? '익절' : '손절';
   await Promise.all(alreadyPosted.map(async s => {
     s.currentPrice = await getLatestPrice(env, s.code);
-    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name);
+    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name, {
+      at: s.recorded_at,
+      price: s.later_price,
+      label: exitLabel
+    });
   }));
 
-  const { title, content: rawContent } = await generateExitArticle(env, alreadyPosted, kind);
-  const label = kind === 'take' ? '익절' : '손절';
-  const videoTopic = `${alreadyPosted.map(s => s.name).slice(0, 2).join(', ')} ${label} 리포트`;
-  const content = await attachVideoLink(env, videoTopic, rawContent);
+  const { title, content } = await generateExitArticle(env, alreadyPosted, kind);
   const accessToken = await getAccessToken(env);
   const post = await postToBlogger(env, accessToken, title, content);
 
@@ -258,7 +232,7 @@ ${listText}
 
 // 09:00(KST)~현재까지 snapshots의 실제 가격 데이터로 SVG 차트를 직접 그려 data URI 반환
 // (외부 차트 서비스 의존 없음 - 네트워크 요청 자체가 없어 빠르고 항상 안정적으로 렌더링됨)
-async function buildIntradayChartUrl(env, code, name) {
+async function buildIntradayChartUrl(env, code, name, exitPoint = null, riskLevels = null) {
   try {
     const todayUtc = new Date().toISOString().slice(0, 10); // KST 09:00 = UTC 00:00 같은 날짜
     const since = `${todayUtc}T00:00:00.000Z`;
@@ -274,22 +248,44 @@ async function buildIntradayChartUrl(env, code, name) {
       new Date(r.captured_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' })
     );
     const prices = results.map(r => r.price);
-    return renderIntradaySvgDataUri(name, labels, prices);
+    // 이탈(익절/손절) 시점과 가장 가까운 캡처 시각의 인덱스를 찾아 그 위치에 마커 표시
+    let exitIdx = null;
+    if (exitPoint && exitPoint.at) {
+      const exitTime = new Date(exitPoint.at).getTime();
+      let bestDiff = Infinity;
+      results.forEach((r, i) => {
+        const diff = Math.abs(new Date(r.captured_at).getTime() - exitTime);
+        if (diff < bestDiff) { bestDiff = diff; exitIdx = i; }
+      });
+    }
+    return renderIntradaySvgDataUri(
+      name, labels, prices,
+      exitPoint ? { idx: exitIdx, price: exitPoint.price, label: exitPoint.label } : null,
+      riskLevels
+    );
   } catch {
     return null; // 차트 생성 실패해도 포스팅 자체는 계속 진행
   }
 }
 
 // 가격 배열을 부드러운 곡선(카디널 스플라인) + 그라디언트 + 글로우 필터로 그린 SVG data URI 생성
-function renderIntradaySvgDataUri(name, labels, prices) {
+// exitMark: {idx, price, label} - 익절/손절 시점을 별도 마커(세로 점선+가격표)로 표시 (없으면 생략)
+function renderIntradaySvgDataUri(name, labels, prices, exitMark = null, riskLevels = null) {
   const W = 720, H = 340;
   const padL = 46, padR = 24, padT = 66, padB = 36;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const n = prices.length;
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
+  const priceMin = Math.min(...prices);
+  const priceMax = Math.max(...prices);
+  // 손절/익절 목표선이 오늘 관측된 가격 범위 밖에 있어도 화면 안에 들어오도록 Y축 스케일 범위에는 포함
+  const scaleCandidates = [...prices];
+  if (riskLevels?.stopLoss != null) scaleCandidates.push(riskLevels.stopLoss);
+  if (riskLevels?.takeProfit != null) scaleCandidates.push(riskLevels.takeProfit);
+  const min = Math.min(...scaleCandidates);
+  const max = Math.max(...scaleCandidates);
   const range = (max - min) || 1;
+  const priceToY = (p) => padT + plotH - ((p - min) / range) * plotH;
 
   const pts = prices.map((p, i) => [
     padL + (i / (n - 1)) * plotW,
@@ -315,8 +311,8 @@ function renderIntradaySvgDataUri(name, labels, prices) {
     `<text x="${pts[i][0]}" y="${H - 10}" font-size="11" fill="#9AA0AC" text-anchor="middle" font-family="sans-serif">${labels[i]}</text>`
   ).join('');
 
-  const maxIdx = prices.indexOf(max);
-  const minIdx = prices.indexOf(min);
+  const maxIdx = prices.indexOf(priceMax);
+  const minIdx = prices.indexOf(priceMin);
   // 시작/최고/최저/현재 - 중복 인덱스는 한 번만 표시
   const keyIdx = [...new Set([0, maxIdx, minIdx, n - 1])];
   const fmtPrice = (p) => Math.round(p).toLocaleString('ko-KR');
@@ -327,6 +323,39 @@ function renderIntradaySvgDataUri(name, labels, prices) {
     return `<circle cx="${x}" cy="${y}" r="4" fill="#fff" stroke="${color}" stroke-width="2"/>` +
       `<text x="${x}" y="${labelY}" font-size="33" font-weight="700" fill="${color}" text-anchor="middle" font-family="sans-serif">${fmtPrice(prices[i])}</text>`;
   }).join('');
+
+  // 익절/손절 시점 마커: 세로 점선 + 앰버색 마커(라인 색과 확실히 구분) + 라벨
+  let exitMarkSvg = '';
+  if (exitMark && exitMark.idx != null && pts[exitMark.idx]) {
+    const [ex, ey] = pts[exitMark.idx];
+    const exColor = '#F5A623';
+    const exAbove = ey > padT + 30;
+    const exLabelY = exAbove ? ey - 34 : ey + 30;
+    const exPriceLabelY = exAbove ? ey - 18 : ey + 46;
+    exitMarkSvg = `
+<line x1="${ex}" y1="${padT}" x2="${ex}" y2="${padT + plotH}" stroke="${exColor}" stroke-width="1.5" stroke-dasharray="4,3"/>
+<circle cx="${ex}" cy="${ey}" r="7" fill="${exColor}" opacity="0.25"/>
+<circle cx="${ex}" cy="${ey}" r="6" fill="${exColor}" stroke="#fff" stroke-width="2"/>
+<rect x="${ex - 24}" y="${exLabelY - 14}" width="48" height="16" rx="4" fill="${exColor}"/>
+<text x="${ex}" y="${exLabelY - 2}" font-size="10" font-weight="700" fill="#fff" text-anchor="middle" font-family="sans-serif">${escapeXml(exitMark.label || '')}</text>
+<text x="${ex}" y="${exPriceLabelY}" font-size="14" font-weight="800" fill="${exColor}" text-anchor="middle" font-family="sans-serif">${fmtPrice(exitMark.price)}</text>`;
+  }
+
+  // 손절가/익절가 목표 수평선 (이탈 전 종목에도 목표 레벨을 미리 표시)
+  let riskLinesSvg = '';
+  let riskLabelsSvg = '';
+  if (riskLevels?.stopLoss != null) {
+    const y = priceToY(riskLevels.stopLoss);
+    riskLinesSvg += `\n<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#0A6CFF" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.7"/>`;
+    riskLabelsSvg += `\n<rect x="${W - padR - 74}" y="${y - 10}" width="72" height="16" rx="4" fill="#0A6CFF"/>` +
+      `<text x="${W - padR - 38}" y="${y + 2}" font-size="10" font-weight="700" fill="#fff" text-anchor="middle" font-family="sans-serif">손절 ${fmtPrice(riskLevels.stopLoss)}</text>`;
+  }
+  if (riskLevels?.takeProfit != null) {
+    const y = priceToY(riskLevels.takeProfit);
+    riskLinesSvg += `\n<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#FF3B30" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.7"/>`;
+    riskLabelsSvg += `\n<rect x="${W - padR - 74}" y="${y - 10}" width="72" height="16" rx="4" fill="#FF3B30"/>` +
+      `<text x="${W - padR - 38}" y="${y + 2}" font-size="10" font-weight="700" fill="#fff" text-anchor="middle" font-family="sans-serif">익절 ${fmtPrice(riskLevels.takeProfit)}</text>`;
+  }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <defs>
@@ -357,12 +386,15 @@ function renderIntradaySvgDataUri(name, labels, prices) {
 <text x="${padL}" y="30" font-size="18" font-weight="700" fill="${color}" font-family="sans-serif">${escapeXml(name)}  ${arrow} ${changePct}%</text>
 <text x="${padL}" y="48" font-size="11" fill="#9AA0AC" font-family="sans-serif">09:00 ~ 현재 · 1분봉</text>
 ${grid}
+${riskLinesSvg}
 <path d="${areaPath}" fill="url(#fillGrad)"/>
 <path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" filter="url(#glow)" opacity="0.85"/>
 <path d="${linePath}" fill="none" stroke="url(#lineGrad)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" filter="url(#dropShadow)"/>
 <circle cx="${pts[n - 1][0]}" cy="${pts[n - 1][1]}" r="6.5" fill="${color}" opacity="0.25"/>
 <circle cx="${pts[n - 1][0]}" cy="${pts[n - 1][1]}" r="5.5" fill="#fff" stroke="${color}" stroke-width="2.5" filter="url(#dropShadow)"/>
 ${keyPoints}
+${exitMarkSvg}
+${riskLabelsSvg}
 ${xlabels}
 </svg>`;
 
@@ -422,6 +454,19 @@ async function fetchStockNews(stockName) {
     return news;
   } catch {
     return []; // 뉴스 조회 실패해도 포스팅 자체는 계속 진행
+  }
+}
+
+// watchlist_risk_status에서 해당 종목의 손절가/익절가 목표선 조회 (읽기전용, 값 없으면 null)
+async function getRiskLevels(env, code) {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT stop_loss, take_profit FROM watchlist_risk_status WHERE code = ? ORDER BY checked_at DESC LIMIT 1`
+    ).bind(code).first();
+    if (!row || (row.stop_loss == null && row.take_profit == null)) return null;
+    return { stopLoss: row.stop_loss, takeProfit: row.take_profit };
+  } catch {
+    return null;
   }
 }
 
