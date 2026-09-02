@@ -66,7 +66,7 @@ async function runPostingJob(env) {
       getRiskLevels(env, s.code)
     ]);
     s.news = news;
-    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name, null, riskLevels);
+    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name, null, riskLevels, { buyPrice: s.entry_price ?? null });
   }));
 
   const { title, content } = await generateArticle(env, alreadyPosted);
@@ -95,11 +95,12 @@ async function runExitReportJob(env, kind) {
   const exitLabel = kind === 'take' ? '익절' : '손절';
   await Promise.all(alreadyPosted.map(async s => {
     s.currentPrice = await getLatestPrice(env, s.code);
-    s.chartUrl = await buildIntradayChartUrl(env, s.code, s.name, {
-      at: s.recorded_at,
-      price: s.later_price,
-      label: exitLabel
-    });
+    s.chartUrl = await buildIntradayChartUrl(
+      env, s.code, s.name,
+      { at: s.recorded_at, price: s.later_price, label: exitLabel },
+      null,
+      { buyPrice: s.entry_price ?? null, sellPrice: s.later_price ?? null }
+    );
   }));
 
   const { title, content } = await generateExitArticle(env, alreadyPosted, kind);
@@ -232,7 +233,7 @@ ${listText}
 
 // 09:00(KST)~현재까지 snapshots의 실제 가격 데이터로 SVG 차트를 직접 그려 data URI 반환
 // (외부 차트 서비스 의존 없음 - 네트워크 요청 자체가 없어 빠르고 항상 안정적으로 렌더링됨)
-async function buildIntradayChartUrl(env, code, name, exitPoint = null, riskLevels = null) {
+async function buildIntradayChartUrl(env, code, name, exitPoint = null, riskLevels = null, tradeLevels = null) {
   try {
     const todayUtc = new Date().toISOString().slice(0, 10); // KST 09:00 = UTC 00:00 같은 날짜
     const since = `${todayUtc}T00:00:00.000Z`;
@@ -261,7 +262,8 @@ async function buildIntradayChartUrl(env, code, name, exitPoint = null, riskLeve
     return renderIntradaySvgDataUri(
       name, labels, prices,
       exitPoint ? { idx: exitIdx, price: exitPoint.price, label: exitPoint.label } : null,
-      riskLevels
+      riskLevels,
+      tradeLevels
     );
   } catch {
     return null; // 차트 생성 실패해도 포스팅 자체는 계속 진행
@@ -270,7 +272,8 @@ async function buildIntradayChartUrl(env, code, name, exitPoint = null, riskLeve
 
 // 가격 배열을 부드러운 곡선(카디널 스플라인) + 그라디언트 + 글로우 필터로 그린 SVG data URI 생성
 // exitMark: {idx, price, label} - 익절/손절 시점을 별도 마커(세로 점선+가격표)로 표시 (없으면 생략)
-function renderIntradaySvgDataUri(name, labels, prices, exitMark = null, riskLevels = null) {
+// tradeLevels: {buyPrice, sellPrice} - 매수가(초록)/매도가(보라) 수평선 (없으면 생략)
+function renderIntradaySvgDataUri(name, labels, prices, exitMark = null, riskLevels = null, tradeLevels = null) {
   const W = 720, H = 340;
   const padL = 46, padR = 24, padT = 66, padB = 36;
   const plotW = W - padL - padR;
@@ -278,10 +281,12 @@ function renderIntradaySvgDataUri(name, labels, prices, exitMark = null, riskLev
   const n = prices.length;
   const priceMin = Math.min(...prices);
   const priceMax = Math.max(...prices);
-  // 손절/익절 목표선이 오늘 관측된 가격 범위 밖에 있어도 화면 안에 들어오도록 Y축 스케일 범위에는 포함
+  // 손절/익절/매수/매도 기준선이 오늘 관측된 가격 범위 밖에 있어도 화면 안에 들어오도록 Y축 스케일 범위에는 포함
   const scaleCandidates = [...prices];
   if (riskLevels?.stopLoss != null) scaleCandidates.push(riskLevels.stopLoss);
   if (riskLevels?.takeProfit != null) scaleCandidates.push(riskLevels.takeProfit);
+  if (tradeLevels?.buyPrice != null) scaleCandidates.push(tradeLevels.buyPrice);
+  if (tradeLevels?.sellPrice != null) scaleCandidates.push(tradeLevels.sellPrice);
   const min = Math.min(...scaleCandidates);
   const max = Math.max(...scaleCandidates);
   const range = (max - min) || 1;
@@ -357,6 +362,22 @@ function renderIntradaySvgDataUri(name, labels, prices, exitMark = null, riskLev
       `<text x="${W - padR - 38}" y="${y + 2}" font-size="10" font-weight="700" fill="#fff" text-anchor="middle" font-family="sans-serif">익절 ${fmtPrice(riskLevels.takeProfit)}</text>`;
   }
 
+  // 매수가/매도가 수평선 (손절·익절과 겹치지 않게 좌측에 라벨 배치, 색도 별도로 구분)
+  let tradeLinesSvg = '';
+  let tradeLabelsSvg = '';
+  if (tradeLevels?.buyPrice != null) {
+    const y = priceToY(tradeLevels.buyPrice);
+    tradeLinesSvg += `\n<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#16A34A" stroke-width="1.5" stroke-dasharray="2,3" opacity="0.75"/>`;
+    tradeLabelsSvg += `\n<rect x="${padL}" y="${y - 10}" width="72" height="16" rx="4" fill="#16A34A"/>` +
+      `<text x="${padL + 36}" y="${y + 2}" font-size="10" font-weight="700" fill="#fff" text-anchor="middle" font-family="sans-serif">매수 ${fmtPrice(tradeLevels.buyPrice)}</text>`;
+  }
+  if (tradeLevels?.sellPrice != null) {
+    const y = priceToY(tradeLevels.sellPrice);
+    tradeLinesSvg += `\n<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#9333EA" stroke-width="1.5" stroke-dasharray="2,3" opacity="0.75"/>`;
+    tradeLabelsSvg += `\n<rect x="${padL}" y="${y - 10}" width="72" height="16" rx="4" fill="#9333EA"/>` +
+      `<text x="${padL + 36}" y="${y + 2}" font-size="10" font-weight="700" fill="#fff" text-anchor="middle" font-family="sans-serif">매도 ${fmtPrice(tradeLevels.sellPrice)}</text>`;
+  }
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <defs>
 <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
@@ -387,6 +408,7 @@ function renderIntradaySvgDataUri(name, labels, prices, exitMark = null, riskLev
 <text x="${padL}" y="48" font-size="11" fill="#9AA0AC" font-family="sans-serif">09:00 ~ 현재 · 1분봉</text>
 ${grid}
 ${riskLinesSvg}
+${tradeLinesSvg}
 <path d="${areaPath}" fill="url(#fillGrad)"/>
 <path d="${linePath}" fill="none" stroke="${color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" filter="url(#glow)" opacity="0.85"/>
 <path d="${linePath}" fill="none" stroke="url(#lineGrad)" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" filter="url(#dropShadow)"/>
@@ -395,6 +417,7 @@ ${riskLinesSvg}
 ${keyPoints}
 ${exitMarkSvg}
 ${riskLabelsSvg}
+${tradeLabelsSvg}
 ${xlabels}
 </svg>`;
 
